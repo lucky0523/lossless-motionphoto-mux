@@ -4,7 +4,7 @@
 
 vivo 等一些机型的实况照片是以「一张 JPG + 一个同名 MP4」的形式分开保存的，换到别的品牌手机上就只是一张静态照片。这个工具把它们合成回单文件格式。
 
-**核心特性：照片和视频的内容一个字节都不改。** 只在 JPEG 的段序列里替换/插入一个 XMP(APP1) 段，不重新编码、不动 EXIF / gainmap / ICC / MakerNotes / 厂商 APPn 段和图像数据，文件名、修改时间、权限也原样保留。
+**核心特性：照片和视频的内容一个字节都不改。** 只在 JPEG 的段序列里替换/插入一个 XMP(APP1) 段，不重新编码、不动 EXIF / GainMap / ICC / MakerNotes / 厂商 APPn 段和图像数据，文件名、修改时间、权限也原样保留。
 
 - `make_motionphoto.py` —— 合成
 - `verify_motionphoto.py` —— 独立校验（合成结束后自动调用，也可单独跑）
