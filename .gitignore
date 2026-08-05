@@ -43,11 +43,5 @@ desktop.ini
 # ---------------------------------------------------------------------------
 # 说明
 # ---------------------------------------------------------------------------
-# 真机样片（OPPO_sample.jpg / Xiaomi_sample.jpg / Samsung_sample.jpg）是
-# README 里格式分析的依据，**故意不忽略**，需要跟随仓库一起提交。
-#
-# 注意：这三张是相机直出照片，EXIF 里可能带 GPS 坐标和机型信息。公开仓库前
-# 请自行确认是否愿意公开这些信息，可以用下面的命令检查：
-#     exiftool -GPS:all -Make -Model *_sample.jpg
-# 如需清除 GPS（会改动样片，之后 README 里的字节数需重新核对）：
-#     exiftool -GPS:all= -overwrite_original *_sample.jpg
+# samples/ 下的三张真机样片是 README 里格式分析的依据，**故意不忽略**，
+# 需要跟随仓库一起提交。
