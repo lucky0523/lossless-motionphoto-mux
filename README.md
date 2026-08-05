@@ -450,21 +450,43 @@ S24+ / One UI。
 
 ---
 
-## 5. 本目录的文件
+## 5. 目录结构
+
+### 进仓库的（约 28 MB）
 
 ```
-make_motionphoto.py            合成脚本
-verify_motionphoto.py          独立校验脚本
-README.md                      本文件
-DCIM/                          数据源（vivo X200 Pro 导出的 jpg + mp4 配对）
-motionphoto_output/            合成输出
-staticphoto_output/            无配对视频的静态照片
-movieout/                      无配对照片的普通视频
-motionphoto_report_*.txt       每次运行的报告
-OPPO_sample.jpg                OPPO Find X9 Ultra 相机直出的实况照片
-Xiaomi_sample.jpg              Xiaomi 17T 相机直出的实况照片
-Samsung_sample.jpg             Samsung Galaxy S24+ 相机直出的实况照片
+make_motionphoto.py                  合成脚本，零第三方依赖
+verify_motionphoto.py                独立校验脚本，合成结束后自动调用
+README.md                            本文件
+.gitignore
+samples/                             三家真机相机直出的实况照片，格式分析的依据
+├── OPPO_sample.jpg                   OPPO Find X9 Ultra   15.3 MB
+├── Xiaomi_sample.jpg                 Xiaomi 17T            5.0 MB
+└── Samsung_sample.jpg                Samsung Galaxy S24+   8.1 MB
 ```
 
-三张真机样片，换机型或系统大版本后，可以用
-`python3 make_motionphoto.py --inspect 新样片.jpg` 直接读出它的结构来对照。
+样片，使用
+`python3 make_motionphoto.py --inspect samples/新样片.jpg` 就能读出它的结构来参考。
+
+### 不进仓库的（已在 `.gitignore` 里屏蔽）
+
+```
+DCIM/                                数据源，本例是 vivo X200 Pro 导出的 jpg + mp4 配对
+└── Camera/2025/{08,09}/               IMG_20250827_180604.jpg + .mp4  ← 同名即为一对
+
+motionphoto_output/                  合成好的 Motion Photo
+└── DCIM/Camera/2025/{08,09}/          复用数据源的完整目录结构
+staticphoto_output/                  没有同名视频、未合成的静态照片
+└── DCIM/Camera/2025/{08,09}/
+movieout/                            没有同名照片的普通视频
+└── DCIM/Camera/2025/{08,09}/
+
+motionphoto_report_年月日_时分秒.txt   每次运行的报告，不覆盖历史
+```
+
+三个输出目录都在自己下面重建一层数据源目录名（本例是 `DCIM/`），再往下完整复用源
+目录层级，所以输出目录之间、以及和源目录之间路径可以直接对应。加
+`--single-out [目录]` 则三类输出合并到同一棵树里。
+
+本例的规模：源 5.7 GB（351 张照片 + 337 个视频），产出 319 个 Motion Photo（3.5 GB）、
+32 张静态照片（123 MB）、18 个视频（2.1 GB）。
