@@ -17,7 +17,11 @@ Motion Photo（逐个文件）
   * XMP：是合法 XML；把 <rdf:RDF>...</rdf:RDF> 单独截出来也能解析
     （厂商相册常这么干）；xmlns:rdf 声明在 rdf:RDF 上
   * 回归项：不得出现 GCamera:MicroVideo*（实测会让 OPPO 认不出动态照片）、
-    不得出现 OpCamera/oplus（实测无用，已删除）
+    不得出现 OpCamera/oplus（实测无用，已删除）；VCamera 那三个属性（规范外）
+    的有无要和源照片的品牌对得上——vivo 拍的必须三个齐全（实测缺任何一个 vivo
+    都认不出），别家必须一个都没有。不论哪种期望，只写出一两个永远算错。
+    「是不是 vivo 拍的」由本脚本自己读源图的 EXIF Make 重新判断，不采信合成
+    脚本的结论，两边不一致会直接报错
   * 标签：GCamera:MotionPhoto=1 / MotionPhotoVersion=1 / 封面帧时间戳 / rdf:about=""
   * 容器目录：首项 Primary；MotionPhoto 唯一且是最后一项；GainMap 排在
     MotionPhoto 之前；至少两项带 Item:Padding（规避 exiftool<=13.50 把单个
@@ -65,6 +69,20 @@ NS = {
     "C": "http://ns.google.com/photos/1.0/container/",
     "I": "http://ns.google.com/photos/1.0/container/item/",
     "G": "http://ns.google.com/photos/1.0/camera/",
+    "V": "http://ns.vivo.com/photos/1.0/camera/",
+}
+# vivo 相册的识别前提：三个属性必须同时出现，缺一个都不认（单变量实测，
+# vivo X300 Pro / OriginOS）。这一组不在规范里，合成脚本按 --vcamera 决定写不写
+# （auto / on / off），所以这里的期望值也分两种情况：
+#   该写 -> 三个都必须在，且值正确
+#   不该写 -> 三个都不许在
+# 「该不该写」是本脚本**自己**从源照片重新判断的（auto 模式下看 EXIF Make 等），
+# 不复用合成脚本的判断结果，保持两边独立。
+# 不管期望是什么，「只写出一两个」永远是错的：vivo 认不出，却又看起来写了。
+VCAMERA_REQUIRED = {
+    "VMotionPhotoVersion": "1",
+    "VMotionPhotoSource": "1",
+    "VMediaKitVersion": "1.0.0.5",
 }
 EXIF_GROUPS = ["-EXIF:all", "-ICC_Profile:all", "-MakerNotes:all", "-Composite:all"]
 
@@ -132,6 +150,42 @@ def mpf_span(d: bytes, segs: List[Tuple[int, int, int]]) -> Optional[Tuple[int, 
     return None
 
 
+def looks_like_vivo(d: bytes) -> bool:
+    """源照片是不是 vivo 拍的（对应合成脚本 --vcamera auto 的判断）。
+
+    这里刻意自己重新实现一遍 EXIF Make 的读取，不复用合成脚本的函数，
+    这样「该不该写 VCamera」两边是各自独立算出来的。
+    """
+    # 1) EXIF IFD0 的 Make(0x010F)
+    p = d.find(b"Exif\x00\x00", 0, 1 << 20)
+    if p >= 0:
+        base = p + 6
+        try:
+            bo = d[base:base + 2]
+            if bo in (b"II", b"MM"):
+                e = ">" if bo == b"MM" else "<"
+                import struct as _s
+                if _s.unpack_from(e + "H", d, base + 2)[0] == 42:
+                    ifd = base + _s.unpack_from(e + "I", d, base + 4)[0]
+                    for k in range(_s.unpack_from(e + "H", d, ifd)[0]):
+                        q = ifd + 2 + 12 * k
+                        tag, typ, num = _s.unpack_from(e + "HHI", d, q)
+                        if tag == 0x010F and typ == 2 and 0 < num <= 256:
+                            raw = (d[q + 8:q + 8 + num] if num <= 4 else
+                                   d[base + _s.unpack_from(e + "I", d, q + 8)[0]:][:num])
+                            if raw.split(b"\x00")[0].strip().lower().startswith(b"vivo"):
+                                return True
+                            break
+        except Exception:  # noqa: BLE001  期望值判断不该因为畸形 EXIF 而中断校验
+            pass
+    # 2) 源 XMP 里的 vivo 命名空间
+    if b"ns.vivo.com" in d[:1 << 20]:
+        return True
+    # 3) 文件尾的 vivo cameralbum! 块
+    tail = d[-65536:]
+    return b"cameralbum!" in tail and b'vivo{"com.android.camera' in tail
+
+
 # --------------------------------------------------------------------------- #
 # 校验
 # --------------------------------------------------------------------------- #
@@ -148,7 +202,8 @@ class Checker:
 
 
 def verify_motion_photo(ck: Checker, src_img: str, src_vid: str, out: str,
-                        rel: str, stats: Dict[str, int]) -> None:
+                        rel: str, stats: Dict[str, int],
+                        vcamera_mode: str = "auto") -> None:
     o = open(src_img, "rb").read()
     n = open(out, "rb").read()
     v = open(src_vid, "rb").read()
@@ -212,6 +267,32 @@ def verify_motion_photo(ck: Checker, src_img: str, src_vid: str, out: str,
     ck.chk(g("MotionPhoto") == "1", rel, "GCamera:MotionPhoto != 1")
     ck.chk(g("MotionPhotoVersion") == "1", rel, "GCamera:MotionPhotoVersion != 1")
     ck.chk(g("MotionPhotoPresentationTimestampUs") is not None, rel, "缺少封面帧时间戳")
+
+    # vivo 私有的三个属性（见 VCAMERA_REQUIRED 处的说明）
+    # 期望值自己算：auto 时按源照片重新判断是不是 vivo 拍的
+    if vcamera_mode == "on":
+        expect_vcamera = True
+    elif vcamera_mode == "off":
+        expect_vcamera = False
+    else:
+        expect_vcamera = looks_like_vivo(o)
+    vc = {name: desc.get("{%s}%s" % (NS["V"], name)) for name in VCAMERA_REQUIRED}
+    present = [k for k, v in vc.items() if v is not None]
+    if expect_vcamera:
+        for name, want in VCAMERA_REQUIRED.items():
+            ck.chk(vc[name] == want, rel,
+                   "VCamera:%s = %r，应为 %r（三个属性缺一个，vivo 就认不出动态照片）"
+                   % (name, vc[name], want))
+    else:
+        ck.chk(not present, rel,
+               "源照片不是 vivo 拍的（或指定了 --vcamera off），却出现了 "
+               "VCamera:%s（规范外标签）" % ", VCamera:".join(present))
+    # 不管期望如何，写一半是最危险的状态
+    ck.chk(len(present) in (0, len(VCAMERA_REQUIRED)), rel,
+           "VCamera:* 只写出了 %d/%d 个（%s），必须三个齐全或一个都不写"
+           % (len(present), len(VCAMERA_REQUIRED), ", ".join(present)))
+    if len(present) == len(VCAMERA_REQUIRED):
+        stats["vcamera"] = stats.get("vcamera", 0) + 1
 
     # ---- 容器目录 ----
     items = list(tree.iterfind(".//{%s}Item" % NS["C"]))
@@ -338,21 +419,38 @@ def run(plan: dict) -> int:
     if not HAVE_EXIFTOOL:
         print("提示: 未找到 exiftool，跳过 EXIF 逐标签比对")
 
+    mode = plan.get("expect", {}).get("vcamera_mode", "auto")
+    if mode != "auto":
+        print("提示: 按 --vcamera %s 校验 VCamera:* 的有无" % mode)
+
     ck = Checker()
-    stats = {"gainmap": 0}
+    stats = {"gainmap": 0, "vcamera": 0}
     srcs: List[str] = []
     outs: List[str] = []
-    for src_img, src_vid, out in plan["motion"]:
+    for entry in plan["motion"]:
+        src_img, src_vid, out = entry[:3]
+        # 清单里第 4 项是合成脚本声明的「本文件写了 VCamera」，只用来对账，
+        # 期望值仍由本脚本自己从源照片判断（见 verify_motion_photo）
+        declared = entry[3] if len(entry) > 3 else None
         rel = os.path.basename(out)
         if not (os.path.exists(src_img) and os.path.exists(src_vid)
                 and os.path.exists(out)):
             ck.fail.append("%s: 源文件或输出文件不存在" % rel)
             continue
+        if declared is not None:
+            mine = True if mode == "on" else False if mode == "off" \
+                else looks_like_vivo(open(src_img, "rb").read())
+            ck.chk(bool(declared) == mine, rel,
+                   "合成脚本说 VCamera=%s，本脚本独立判断是 %s（两边的设备识别不一致）"
+                   % (declared, mine))
         srcs.append(src_img)
         outs.append(out)
-        verify_motion_photo(ck, src_img, src_vid, out, rel, stats)
+        verify_motion_photo(ck, src_img, src_vid, out, rel, stats, mode)
     print("已校验 Motion Photo: %d（其中 %d 张按容器目录成功解码出 GainMap）"
           % (len(outs), stats["gainmap"]))
+    if outs:
+        print("带 vivo 私有 VCamera:* 的: %d/%d（--vcamera %s，"
+              "按源照片的拍摄设备逐个核对）" % (stats["vcamera"], len(outs), mode))
 
     counts: Dict[str, int] = {}
     for label, s, out in plan["copies"]:
@@ -374,9 +472,9 @@ def run(plan: dict) -> int:
     cov = plan.get("coverage")
     if cov:
         consumed = set()
-        for src_img, src_vid, _ in plan["motion"]:
-            consumed.add(os.path.abspath(src_img))
-            consumed.add(os.path.abspath(src_vid))
+        for entry in plan["motion"]:
+            consumed.add(os.path.abspath(entry[0]))
+            consumed.add(os.path.abspath(entry[1]))
         for _, s, _ in plan["copies"]:
             consumed.add(os.path.abspath(s))
         missing = []
@@ -426,6 +524,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                     metavar="DIR", help="三类输出都在同一个目录时用这个")
     ap.add_argument("--limit", type=int, default=0, metavar="N",
                     help="只校验前 N 个 Motion Photo，0=全部（同时跳过覆盖率检查）")
+    ap.add_argument("--vcamera", nargs="?", const="on", default="auto",
+                    choices=("auto", "on", "off"), metavar="{auto,on,off}",
+                    help="被校验的输出是用 make_motionphoto.py 的哪种 --vcamera\n"
+                         "生成的（默认 auto：源照片是 vivo 拍的就要求三个属性\n"
+                         "齐全，否则要求一个都没有）。清单模式下自动跟随本次的\n"
+                         "选择，不用手动加")
     ap.add_argument("--manifest", metavar="FILE",
                     help="清单模式：从 JSON 文件读取要校验的文件三元组。\n"
                          "make_motionphoto.py 合成结束后就是用这个模式调用本脚本的，"
@@ -441,7 +545,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             raw = json.load(fh)
         plan = {"motion": [tuple(x) for x in raw.get("motion", [])],
                 "copies": [tuple(x) for x in raw.get("copies", [])],
-                "coverage": raw.get("coverage")}
+                "coverage": raw.get("coverage"),
+                "expect": raw.get("expect", {})}
         return run(plan)
 
     if args.single_out:
@@ -454,9 +559,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not os.path.isdir(mo):
         print("错误: 动态照片输出目录不存在: %s" % mo, file=sys.stderr)
         return 2
-    return run(scan_dirs(args.src, mo,
-                         os.path.join(args.static_out, root_name),
-                         os.path.join(args.movie_out, root_name), args.limit))
+    plan = scan_dirs(args.src, mo,
+                     os.path.join(args.static_out, root_name),
+                     os.path.join(args.movie_out, root_name), args.limit)
+    plan["expect"] = {"vcamera_mode": args.vcamera}
+    return run(plan)
 
 
 if __name__ == "__main__":

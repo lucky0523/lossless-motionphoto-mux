@@ -14,14 +14,21 @@
 * XMP 的 xmlns 声明必须放在真机的位置上（xmlns:rdf 在 rdf:RDF 上、厂商
   命名空间在 rdf:Description 上）。全部提到根元素上会让小米无法识别。
 * 前缀要用 GCamera / Container / Item 这一套通用写法。
-* 不需要任何厂商私有的东西，三家都认这一套纯 Google 标准元数据：
+* OPPO / 小米 / 三星认的就是纯 Google 标准的一套，厂商私有的东西都不需要：
   - OPPO 的 OpCamera:* 那一组，以及 EXIF 里 oplus_ 开头的 UserComment：不需要
     （小米原厂样片两者皆无，OPPO 一样能识别），所以本工具完全不动 EXIF。
   - 三星的 SEF trailer（SEFH/SEFT + MotionPhoto_Data 标签）：不需要，三星
     Gallery 同样能识别标准格式。
   - 厂商原厂文件里那段短的无音轨"自动播放"次视频：可选，不影响识别。
-* Ultra HDR：三家相册都靠 MPF(APP2) 定位 gainmap，不依赖容器目录里的 GainMap
-  项（实测把该项删掉，三家仍正常显示 HDR）。但 Google Photos 依赖它，所以
+* vivo 是唯一的例外：VCamera:VMotionPhotoVersion / VMotionPhotoSource /
+  VMediaKitVersion 这三个私有属性**必须同时存在**，缺任何一个 vivo 相册就认不出
+  （单变量对照实测，vivo X300 Pro；三个单属性、三种两两组合全部试过）。写上
+  它们对 OPPO / 小米 / 三星没有影响。所以规律是：标准元数据是必要条件，但不
+  一定是充分条件。因为这一组不在规范里，默认按源照片的品牌自动决定
+  （--vcamera auto：EXIF Make 以 vivo 开头就写），也可以用 --vcamera on/off
+  强制。
+* Ultra HDR：四家相册都靠 MPF(APP2) 定位 gainmap，不依赖容器目录里的 GainMap
+  项（实测把该项删掉，仍正常显示 HDR）。但 Google Photos 依赖它，所以
   容器目录里的 GainMap 项必须原样保留。
 
 设计要点
@@ -91,6 +98,17 @@ NS_CAMERA = "http://ns.google.com/photos/1.0/camera/"
 # OPPO / 一加 / 真我的私有命名空间。本工具不写它，只在 --inspect 读别人的文件
 # 时会遇到，这里留着是为了给它一个稳定的前缀。
 NS_OPCAMERA = "http://ns.oplus.com/photos/1.0/camera/"
+# vivo / iQOO 的私有命名空间。**这个必须写**，见 build_xmp() 里的实测记录。
+NS_VCAMERA = "http://ns.vivo.com/photos/1.0/camera/"
+
+# vivo 相册识别动态照片的必要条件：这三个属性必须同时出现，缺任何一个都不认。
+# 值照抄 vivo X300 Pro 原厂样片。规范里没有这一组，所以默认不写，要靠 --vcamera
+# 显式打开。
+VCAMERA_TAGS = (
+    ("VMotionPhotoVersion", "1"),
+    ("VMotionPhotoSource", "1"),
+    ("VMediaKitVersion", "1.0.0.5"),
+)
 
 # ET 的命名空间前缀表是进程全局的，多线程下必须串行化 XMP 的构建与序列化
 _XMP_LOCK = threading.Lock()
@@ -98,6 +116,10 @@ _XMP_LOCK = threading.Lock()
 XMP_SIG = b"http://ns.adobe.com/xap/1.0/\x00"
 XMP_EXT_SIG = b"http://ns.adobe.com/xmp/extension/\x00"
 MPF_SIG = b"MPF\x00"
+EXIF_SIG = b"Exif\x00\x00"
+
+# --vcamera 的三种取值
+VCAMERA_MODES = ("auto", "on", "off")
 
 # 原文件没有 XMP 时，新建的 XMP 包里写这个 toolkit 标识；原文件已有 XMP 则沿用它自己的
 XMP_TOOLKIT = "make_motionphoto.py %s" % __version__
@@ -196,6 +218,67 @@ def find_mpf_segment(data: bytes, segs: List[Segment]) -> Optional[Segment]:
         if s.marker == 0xE2 and data[s.payload_start:s.payload_start + 4] == MPF_SIG:
             return s
     return None
+
+
+# --------------------------------------------------------------------------- #
+# 拍摄设备识别（用于 --vcamera auto）
+# --------------------------------------------------------------------------- #
+
+def exif_make(data: bytes, segs: List[Segment]) -> Optional[str]:
+    """读 EXIF IFD0 的 Make(0x010F)。只读不改，解析失败一律返回 None。"""
+    for s in segs:
+        if s.marker != 0xE1 or data[s.payload_start:s.payload_start + 6] != EXIF_SIG:
+            continue
+        base = s.payload_start + 6            # TIFF 头起点
+        try:
+            bo = data[base:base + 2]
+            if bo not in (b"II", b"MM"):
+                return None
+            e = ">" if bo == b"MM" else "<"
+            if struct.unpack_from(e + "H", data, base + 2)[0] != 42:
+                return None
+            ifd = base + struct.unpack_from(e + "I", data, base + 4)[0]
+            count = struct.unpack_from(e + "H", data, ifd)[0]
+            for k in range(count):
+                p = ifd + 2 + 12 * k
+                tag, typ, num = struct.unpack_from(e + "HHI", data, p)
+                if tag != 0x010F:             # Make
+                    continue
+                if typ != 2 or not 0 < num <= 256:
+                    return None
+                if num <= 4:
+                    raw = data[p + 8:p + 8 + num]
+                else:
+                    off = base + struct.unpack_from(e + "I", data, p + 8)[0]
+                    raw = data[off:off + num]
+                return raw.split(b"\x00", 1)[0].decode("ascii", "replace").strip() or None
+        except (struct.error, IndexError):
+            return None
+    return None
+
+
+def source_is_vivo(data: bytes, segs: List[Segment]) -> Tuple[bool, str]:
+    """判断源照片是不是 vivo 拍的，返回 (是否, 判断依据)。
+
+    三个依据按可靠性排序，命中任意一个就算：
+      1. EXIF 的 Make 以 vivo 开头（iQOO 机型同样写 vivo）
+      2. 源 XMP 里声明了 vivo 的私有命名空间
+      3. 文件尾部有 vivo 相机的 cameralbum! 块
+    只读源文件，不改任何字节。
+    """
+    make = exif_make(data, segs)
+    if make and make.lower().startswith("vivo"):
+        return True, "EXIF Make=%s" % make
+
+    xmp = find_xmp_segment(data, segs)
+    if xmp is not None and NS_VCAMERA.encode() in data[xmp.payload_start:xmp.end]:
+        return True, "源 XMP 里有 vivo 命名空间"
+
+    tail = data[-65536:]
+    if b"cameralbum!" in tail and b'vivo{"com.android.camera' in tail:
+        return True, "尾部有 vivo 的 cameralbum! 块"
+
+    return False, "EXIF Make=%s" % (make or "（无）")
 
 
 def xmp_insert_position(data: bytes, segs: List[Segment]) -> int:
@@ -353,6 +436,7 @@ KNOWN_PREFIXES = {
     NS_ITEM: "Item",
     NS_CAMERA: "GCamera",
     NS_OPCAMERA: "OpCamera",
+    NS_VCAMERA: "VCamera",
     "http://ns.adobe.com/hdr-gain-map/1.0/": "hdrgm",
     "http://ns.adobe.com/xap/1.0/": "xmp",
     "http://ns.adobe.com/photoshop/1.0/": "photoshop",
@@ -412,9 +496,10 @@ def _collect_uris(el: ET.Element, out: set) -> None:
         _collect_uris(c, out)
 
 
-# xmlns 声明的排列顺序（照抄真机样片：hdrgm, GCamera, Container, Item）
+# xmlns 声明的排列顺序（照抄真机样片：hdrgm, GCamera, Container, Item, VCamera）
 NS_DECL_ORDER = ["http://ns.adobe.com/hdr-gain-map/1.0/", NS_CAMERA, NS_OPCAMERA,
-                 "http://ns.xiaomi.com/photos/1.0/camera/", NS_CONTAINER, NS_ITEM]
+                 "http://ns.xiaomi.com/photos/1.0/camera/", NS_CONTAINER, NS_ITEM,
+                 NS_VCAMERA]
 # Container:Item 的属性顺序（真机样片是 Mime 在前）
 ITEM_ATTR_ORDER = ["Mime", "Semantic", "Length", "Padding"]
 
@@ -547,12 +632,15 @@ def build_xmp(existing: Optional[str],
               video_len: int,
               video_mime: str,
               presentation_ts_us: Optional[int],
-              image_data: Optional[bytes] = None) -> Tuple[str, List[str]]:
+              image_data: Optional[bytes] = None,
+              write_vcamera: bool = False) -> Tuple[str, List[str]]:
     """生成新的 XMP 包文本。
 
     existing               原有 XMP 包文本（没有则 None）
     primary_len            主 JPEG 编码长度（第一个 EOI 之后的偏移）
     file_len_before_video  追加视频前的原始文件总长度
+    write_vcamera          是否写 vivo 私有的 VCamera:*（规范外标签，默认不写，
+                           见下面注释）
     image_data             原始图片字节，用于校正 secondary item 的实际起点
     """
     notes: List[str] = []
@@ -606,10 +694,46 @@ def build_xmp(existing: Optional[str],
     holder.set(_q(NS_CAMERA, "MotionPhotoVersion"), "1")
     holder.set(_q(NS_CAMERA, "MotionPhotoPresentationTimestampUs"), str(ts))
 
-    # 注：这里不写任何厂商私有标签。OPPO/ColorOS 的 OpCamera:MotionPhotoOwner /
-    # OLivePhotoVersion / VideoLength / MotionPhotoPrimaryPresentationTimestampUs
-    # 经单变量对照实测确认不是识别的必要条件（写与不写，OPPO Find X9 Ultra 和
-    # Xiaomi 17T 都能识别），故不写，XMP 保持纯 Google 标准的一套。
+    # ---- VCamera：vivo 相册的识别前提，由 --vcamera 决定写不写 ----
+    #
+    # 这一组**不在 Motion Photo 规范里**，是 vivo 自己的东西，所以不无条件写：
+    # 默认 --vcamera auto，只给 vivo 拍的照片写（判断见 source_is_vivo）。
+    #
+    # 【打开开关时三个必须一起写，不能只留其中一两个】单变量对照实测
+    # （vivo X300 Pro / OriginOS，所有变体的图片与视频字节完全相同）：
+    #     三个都写            ->  vivo 认
+    #     只写任意 1 个        ->  vivo 不认（三种单属性变体全试过）
+    #     只写任意 2 个        ->  vivo 不认（三种两两组合全试过）
+    #     一个都不写           ->  vivo 不认
+    # 也就是说 vivo 要求这三个属性同时存在，缺一个就走不进它的动态照片分支。
+    #
+    # 另外实测排除掉的（都是单变量对照，vivo 一样不认）：
+    #   - 尾部 cameralbum! 块里的 28 字节 livephoto ID 改成原厂合并件用的
+    #     "motionphoto0001..." 常量串
+    #   - 尾部 JSON 的 version 字段改成原厂件的 2103
+    #   - 去掉 XMP 外面的 <?xpacket?> 包裹（原厂件都没有这层包裹）
+    # 所以 vivo 的判定只看 XMP，和尾部厂商数据无关。
+    #
+    # 回归确认：带这三个属性的文件在 OPPO Find X9 Ultra / Xiaomi 17T /
+    # Samsung Galaxy S24+ 上都仍然正常识别，即对别家无副作用。
+    #
+    # 对照：OPPO 的 OpCamera:MotionPhotoOwner / OLivePhotoVersion / VideoLength /
+    # MotionPhotoPrimaryPresentationTimestampUs 经同样的对照实测确认**不是**必要
+    # 条件（写与不写 OPPO 都认），故不写。两家在私有标签上的态度正好相反。
+    if write_vcamera:
+        for name, value in VCAMERA_TAGS:
+            holder.set(_q(NS_VCAMERA, name), value)
+    else:
+        # 默认路径：不写，并且把源 XMP 里带的同类属性也清掉，保证
+        #「默认 = 只有规范内的标签」这句话成立（有清掉才记一条提示）。
+        removed = False
+        for d in rdf.iter():
+            for key in [k for k in d.attrib if k.startswith("{%s}" % NS_VCAMERA)]:
+                del d.attrib[key]
+                removed = True
+        if removed:
+            notes.append("源 XMP 里的 vivo 私有 VCamera:* 已清掉"
+                         "（规范外标签，需要时用 --vcamera on）")
 
     # ---- Container:Directory / rdf:Seq ----
     if directory is None:
@@ -668,7 +792,7 @@ def build_xmp(existing: Optional[str],
         prev_item = it
 
     # 注：原有的 GainMap 等 secondary item 一律原样保留在目录里。
-    # 实测三家相册（OPPO/小米/三星）都是通过 MPF(APP2) 定位 gainmap 的，把
+    # 实测四家相册（OPPO/小米/三星/vivo）都是通过 MPF(APP2) 定位 gainmap 的，把
     # GainMap 项从目录里删掉它们照样显示 HDR；但 Google Photos 的 Ultra HDR
     # 依赖这一项，所以必须留着。
     #
@@ -749,20 +873,33 @@ class Result:
     notes: List[str] = field(default_factory=list)
     out_bytes: int = 0
     src_video: Optional[str] = None   # merged 时记下配对的视频，供合成后校验用
+    vcamera: bool = False             # merged 时是否写了 vivo 私有的 VCamera:*
 
 
 def merge_motion_photo(image_path: str, video_path: str, out_path: str,
                        dry_run: bool = False, verify: bool = True,
-                       ) -> Tuple[List[str], int]:
+                       vcamera: str = "auto",
+                       ) -> Tuple[List[str], int, bool]:
     """把 image + video 合成 Motion Photo 写到 out_path。
 
-    返回 (提示信息列表, 输出文件字节数)。dry-run 下不写文件，但返回的字节数是
-    精确值而非估算——那时图片部分已经在内存里拼好了，加上视频长度就是最终大小。
+    vcamera 取 auto / on / off，auto 时按源照片是不是 vivo 拍的自动决定。
+    返回 (提示信息列表, 输出文件字节数, 是否写了 VCamera:*)。dry-run 下不写文件，
+    但返回的字节数是精确值而非估算——那时图片部分已经在内存里拼好了，加上视频
+    长度就是最终大小。
     """
     with open(image_path, "rb") as fh:
         data = fh.read()
 
     segs, primary_end = parse_jpeg(data)
+
+    # ---- 决定要不要写 vivo 私有的 VCamera:*（规范外标签，见 build_xmp 里的注释）----
+    if vcamera == "on":
+        write_vcamera, why = True, "--vcamera on"
+    elif vcamera == "off":
+        write_vcamera, why = False, "--vcamera off"
+    else:
+        write_vcamera, why = source_is_vivo(data, segs)
+        why = "auto：" + why
     video_size = os.path.getsize(video_path)
     if video_size <= 0:
         raise ValueError("视频文件为空")
@@ -785,7 +922,10 @@ def merge_motion_photo(image_path: str, video_path: str, out_path: str,
             video_mime=video_mime,
             presentation_ts_us=ts_us,
             image_data=data,
+            write_vcamera=write_vcamera,
         )
+    if write_vcamera:
+        notes.append("已写 vivo 私有的 VCamera:* 三个属性（%s）" % why)
     new_seg = make_app1_xmp(packet)
 
     if xmp_seg is not None:
@@ -815,7 +955,7 @@ def merge_motion_photo(image_path: str, video_path: str, out_path: str,
     out_size = len(buf) + video_size
     if dry_run:
         notes.append("dry-run：未写文件")
-        return notes, out_size
+        return notes, out_size, write_vcamera
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     tmp = out_path + ".part"
@@ -836,7 +976,7 @@ def merge_motion_photo(image_path: str, video_path: str, out_path: str,
 
     # 保留时间戳与权限
     shutil.copystat(image_path, out_path)
-    return notes, out_size
+    return notes, out_size, write_vcamera
 
 
 def verify_output(out_path: str, video_path: str, video_size: int,
@@ -870,6 +1010,13 @@ def verify_output(out_path: str, video_path: str, video_size: int,
         if "MicroVideo" in packet:
             raise ValueError("校验失败：XMP 里出现了已废弃的 MicroVideo 属性"
                              "（会导致 OPPO 无法识别）")
+        # VCamera:* 要么三个齐全、要么一个都没有。只写出一两个是最危险的状态：
+        # vivo 认不出，而且看起来"写了 vivo 标签"，容易掩盖问题。
+        n_vc = sum(1 for name, _ in VCAMERA_TAGS if ("VCamera:%s=" % name) in packet)
+        if n_vc not in (0, len(VCAMERA_TAGS)):
+            raise ValueError("校验失败：VCamera:* 只写出了 %d/%d 个，"
+                             "必须三个齐全或一个都不写（缺一个 vivo 就认不出）"
+                             % (n_vc, len(VCAMERA_TAGS)))
 
         # 从文件尾倒推 item_len 字节，必须正好是视频的开头
         fh.seek(total - item_len)
@@ -1067,11 +1214,12 @@ def run_job(job: Job, args, progress: Progress) -> Result:
                                   args.name_style)
             if os.path.exists(out) and args.skip_existing:
                 return Result("skipped", src, out, "输出已存在")
-            notes, size = merge_motion_photo(job.image, job.video, out,
-                                             dry_run=args.dry_run,
-                                             verify=not args.no_verify)
+            notes, size, vc = merge_motion_photo(job.image, job.video, out,
+                                                 dry_run=args.dry_run,
+                                                 verify=not args.no_verify,
+                                                 vcamera=args.vcamera)
             return Result("merged", src, out, notes=notes, out_bytes=size,
-                          src_video=job.video)
+                          src_video=job.video, vcamera=vc)
 
         if job.kind in ("static", "unsupported"):
             out = out_path_for(job.image, args.src, args.static_out)
@@ -1187,11 +1335,29 @@ def build_report(results: List[Result], stats: Dict[str, int], args,
 
     if merged:
         add("")
-        add("--- 写入的元数据（真机实测：OPPO / 小米 / 三星 三家相册均可识别）---")
-        add("  只写 Google 标准标签，不写任何厂商私有标签：")
+        n_vc = sum(1 for r in merged if r.vcamera)
+        if n_vc == len(merged):
+            add("--- 写入的元数据（真机实测：OPPO / 小米 / 三星 / vivo "
+                "四家相册均可识别）---")
+        elif n_vc:
+            add("--- 写入的元数据（%d/%d 个文件带 vivo 私有属性，"
+                "其余只含规范内标签）---" % (n_vc, len(merged)))
+        else:
+            add("--- 写入的元数据（真机实测：OPPO / 小米 / 三星 可识别；"
+                "vivo 还需要 VCamera:*，本次未写）---")
+        add("  Google 标准标签：")
         add("    GCamera:MotionPhoto=1 / MotionPhotoVersion=1 /")
         add("    MotionPhotoPresentationTimestampUs")
         add("    Container:Directory（Primary [+ GainMap] + MotionPhoto）")
+        add("  vivo 私有的 VCamera:*（规范外标签，--vcamera=%s）：%d/%d 个文件写了"
+            % (args.vcamera, n_vc, len(merged)))
+        if n_vc:
+            add("    VCamera:VMotionPhotoVersion=1 / VMotionPhotoSource=1 /")
+            add("    VMediaKitVersion=1.0.0.5")
+            add("    （缺一个 vivo 就认不出；实测对 OPPO / 小米 / 三星无影响）")
+        if n_vc < len(merged):
+            add("    没写的那些：源文件带了 VCamera:* 也会清掉；"
+                "要一律写就用 --vcamera on")
         add("  不写 GCamera:MicroVideo*（实测写了会让 OPPO 认不出动态照片），"
             "源文件带了也会清掉")
         add("  不写 OpCamera:*、不改 EXIF UserComment（实测均非识别所必需）")
@@ -1263,14 +1429,16 @@ def build_manifest(results: List[Result], args) -> dict:
     下只处理了一部分文件。
     """
     label = {"static": "静态照片", "unsupported": "静态照片", "video": "视频"}
-    motion = [[r.src, r.src_video, r.out] for r in results
+    # 第 4 项是本次有没有给这个文件写 VCamera:*，校验脚本据此逐个文件判断期望值
+    motion = [[r.src, r.src_video, r.out, r.vcamera] for r in results
               if r.kind == "merged" and r.out and r.src_video]
     copies = [[label[r.kind], r.src, r.out] for r in results
               if r.kind in label and r.out]
     # 只有完整跑过一遍才做覆盖率检查（--limit / --skip-existing 下本来就是部分处理）
     full = not args.limit and not args.skip_existing
     return {"motion": motion, "copies": copies,
-            "coverage": {"src": args.src} if full else None}
+            "coverage": {"src": args.src} if full else None,
+            "expect": {"vcamera_mode": args.vcamera}}
 
 
 def run_final_verify(results: List[Result], args) -> Tuple[int, str]:
@@ -1354,7 +1522,8 @@ def inspect_file(path: str) -> None:
             "MicroVideo", "MicroVideoVersion", "MicroVideoOffset",
             "MicroVideoPresentationTimestampUs", "MotionPhotoOwner",
             "OLivePhotoVersion", "VideoLength",
-            "MotionPhotoPrimaryPresentationTimestampUs"]
+            "MotionPhotoPrimaryPresentationTimestampUs",
+            "VMotionPhotoVersion", "VMotionPhotoSource", "VMediaKitVersion"]
     print("关键标签:")
     for k in keys:
         m = (re.search(r'[\w.\-]*:%s="([^"]*)"' % k, packet)
@@ -1432,13 +1601,25 @@ EPILOG = """\
   MP_DEBUG=1 python3 make_motionphoto.py
       失败时在报告里附上完整 traceback
 
-手机兼容性（真机实测：OPPO / ColorOS，小米 / HyperOS，三星 Galaxy / One UI）
-  默认输出这三家都能识别，正常情况下什么开关都不用加。
+手机兼容性（真机实测：OPPO / ColorOS，小米 / HyperOS，三星 Galaxy / One UI，
+            vivo / OriginOS）
+  默认（--vcamera auto）按源照片的品牌决定要不要写 vivo 私有标签：vivo 拍的
+  就写，四家都能识别；别家拍的不写，输出只含规范内的标签。正常情况下什么
+  开关都不用加。
   * 单变量对照实测发现：XMP 里只要多了 GCamera:MicroVideo* 这 4 个废弃属性，
     OPPO 就不再识别为动态照片（小米无所谓）。所以本工具永不写这一组，
     源文件里带了也会清掉。想改这个行为前请先读 build_xmp() 里的注释。
-  * 反过来，厂商私有的东西一个都不需要：OPPO 的 OpCamera:* 标签、EXIF 里
-    oplus_ 开头的 UserComment、三星的 SEF trailer，实测都可以不写。
+  * 反过来，vivo 硬性要求 VCamera:VMotionPhotoVersion / VMotionPhotoSource /
+    VMediaKitVersion 三个私有属性同时存在，缺一个就认不出（实测三个单属性和
+    三种两两组合全都不认）。它们不在规范里，所以做成三档开关：
+        --vcamera auto  默认。源照片是 vivo 拍的就写，别家不写
+        --vcamera on    一律写。对 OPPO / 小米 / 三星无副作用（已回归验证）
+        --vcamera off   一律不写，输出严格只含规范内的标签
+    auto 的判断依据是源图 EXIF 的 Make（其次是源 XMP 的 vivo 命名空间、
+    文件尾的 cameralbum! 块），只读不改。
+  * 除此之外厂商私有的东西一个都不需要：OPPO 的 OpCamera:* 标签、EXIF 里
+    oplus_ 开头的 UserComment、三星的 SEF trailer、vivo 的 vivoMediaEStream
+    包和尾部 cameralbum! 块里的 livephoto ID，实测都可以不写/不改。
   * --name-style 是给尚未验证过的机型留的兜底手段。规范建议文件名以 MP 结尾，
     并允许读取器在文件名不匹配时直接忽略动态照片，但上面三家都不看文件名。
   * 传输要用数据线/MTP 或 LocalSend 这类不改文件的方式。微信、QQ、
@@ -1506,6 +1687,20 @@ def build_parser() -> argparse.ArgumentParser:
                    help="报告写到哪个文件\n"
                         "默认 motionphoto_report_年月日_时分秒.txt（每次运行不覆盖）\n"
                         '传空字符串 --report "" 则只打印不写文件')
+
+    g = ap.add_argument_group("元数据")
+    g.add_argument("--vcamera", nargs="?", const="on", default="auto",
+                   choices=VCAMERA_MODES, metavar="{auto,on,off}",
+                   help="要不要写 vivo 私有的 VCamera:* 三个属性（默认 auto）\n"
+                        "  auto  源照片是 vivo 拍的就写，别家不写（推荐）\n"
+                        "  on    一律写（不带值的 --vcamera 等于 on）\n"
+                        "  off   一律不写，输出只含规范内的标签\n"
+                        "这一组不在 Motion Photo 规范里，但 vivo 相册缺了它就\n"
+                        "认不出动态照片（实测三个必须同时存在，少一个都不行）；\n"
+                        "OPPO / 小米 / 三星 写与不写都能识别。\n"
+                        "auto 的判断依据：EXIF 的 Make 以 vivo 开头，或源 XMP 里\n"
+                        "有 vivo 命名空间，或文件尾有 vivo 的 cameralbum! 块。\n"
+                        "不写时，源 XMP 里已有的 VCamera:* 会被清掉。")
 
     g = ap.add_argument_group("运行控制")
     g.add_argument("--workers", type=int, default=4, metavar="N",

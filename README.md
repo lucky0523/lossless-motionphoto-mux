@@ -1,6 +1,6 @@
 # Motion Photo 合成工具
 
-把同名（不含扩展名）的照片和视频合成为 Google Motion Photo（动态照片 / 实况照片），在 OPPO、小米、三星手机相册里都能被识别为动态照片。
+把同名（不含扩展名）的照片和视频合成为 Google Motion Photo（动态照片 / 实况照片），在 OPPO、小米、三星、vivo 手机相册里都能被识别为动态照片。（vivo 相册额外要求三个规范外的私有标签，工具会按源照片的拍摄设备**自动**决定写不写。）
 
 vivo 等一些机型的实况照片是以「一张 JPG + 一个同名 MP4」的形式分开保存的，换到别的品牌手机上就只是一张静态照片。这个工具把它们合成回单文件格式。
 
@@ -19,7 +19,7 @@ vivo 等一些机型的实况照片是以「一张 JPG + 一个同名 MP4」的�
   - [参数](#参数)
   - [`--dry-run` 用来做什么](#--dry-run-用来做什么)
   - [校验脚本](#校验脚本)
-- [2. Motion Photo 格式与三家厂商对比](#2-motion-photo-格式与三家厂商对比)
+- [2. Motion Photo 格式与四家厂商对比](#2-motion-photo-格式与四家厂商对比)
 - [3. 研究过程与踩过的坑](#3-研究过程与踩过的坑)
   - [坑 1：源素材是 Ultra HDR，不能简单「写个 XMP + cat 视频」](#坑-1源素材是-ultra-hdr不能简单写个-xmp--cat-视频)
   - [坑 2：vivo 在文件尾部塞了私有数据](#坑-2vivo-在文件尾部塞了私有数据)
@@ -28,6 +28,7 @@ vivo 等一些机型的实况照片是以「一张 JPG + 一个同名 MP4」的�
   - [坑 5（OPPO 认不出的真凶）：写了已废弃的 `MicroVideo*`](#坑-5oppo-认不出的真凶写了已废弃的-microvideo)
   - [坑 6：一路上加过的东西，事后逐个证否](#坑-6一路上加过的东西事后逐个证否)
   - [坑 7：GainMap 前面的对齐字节（靠独立校验查出来的）](#坑-7gainmap-前面的对齐字节靠独立校验查出来的)
+  - [坑 8（和坑 5 正好相反）：vivo 少了私有标签就认不出](#坑-8和坑-5-正好相反vivo-少了私有标签就认不出)
 - [4. 最终结论：写什么、不写什么](#4-最终结论写什么不写什么)
 - [5. 目录结构](#5-目录结构)
 
@@ -58,6 +59,8 @@ python3 make_motionphoto.py --dry-run              # 只分析不写文件，1 �
 python3 make_motionphoto.py --limit 5 --workers 1  # 只处理前 5 个，单线程，便于排错
 python3 make_motionphoto.py --single-out 相册       # 三类输出合并到 相册/ 下
 python3 make_motionphoto.py --src /Volumes/SD/DCIM --motion-out ~/out
+python3 make_motionphoto.py --vcamera on           # 一律写 vivo 私有标签（默认按设备自动判断）
+python3 make_motionphoto.py --vcamera off          # 一律不写，只输出规范内的标签
 python3 make_motionphoto.py --inspect a.jpg b.jpg  # 诊断：打印文件的 Motion Photo 结构
 python3 make_motionphoto.py -h                     # 完整用法（也可以写 help）
 python3 make_motionphoto.py -V                     # 版本号（--version 同义）
@@ -79,6 +82,7 @@ MP_DEBUG=1 python3 make_motionphoto.py             # 失败时在报告里附完
 | `--limit N` | 只处理前 N 个任务，0=全部 |
 | `--dry-run` | 只分析不写任何文件 |
 | `--skip-existing` | 输出已存在就跳过，可用于断点续跑 |
+| `--vcamera {auto,on,off}` | 要不要写 vivo 私有的 `VCamera:*` 三个属性，默认 `auto`（源照片是 vivo 拍的就写，别家不写）。不带值的 `--vcamera` 等于 `on`。这一组不在规范内，但 vivo 相册缺了它就认不出动态照片；其余三家写与不写都识别。不写时，源 XMP 里已有的 `VCamera:*` 会被清掉 |
 | `--no-verify` | 跳过逐文件自检和合成后整体校验（不建议） |
 | `--inspect FILE...` | 诊断模式：打印文件的 Motion Photo 结构，不做合成 |
 
@@ -104,7 +108,7 @@ python3 verify_motionphoto.py --limit 10       # 抽查前 10 个
 
 - **字节完整性** —— 视频末尾与源 mp4 逐字节一致；XMP 段之前与源图逐字节一致（EXIF 一个字节都不许动）；XMP 段之后最多 4 字节差异且只能落在 MPF 段内
 - **XMP 合法性** —— 是合法 XML；`<rdf:RDF>...</rdf:RDF>` 单独截出来也能解析（厂商相册常这么干）；`xmlns:rdf` 声明在 `rdf:RDF` 上
-- **踩坑回归** —— 不得出现 `MicroVideo*` / `OpCamera` / `oplus`，文件尾不得是 `SEFT`
+- **踩坑回归** —— 不得出现 `MicroVideo*` / `OpCamera` / `oplus`，文件尾不得是 `SEFT`；`VCamera:*` 的有无要和源照片的品牌对得上（vivo 拍的必须三个齐全，别家必须一个都没有；只写一两个永远算失败）。「是不是 vivo 拍的」由校验脚本自己读源图 EXIF 重新判断，和合成脚本的结论不一致会直接报错
 - **容器目录** —— 首项 `Primary`；`MotionPhoto` 唯一且是最后一项；`GainMap` 排在`MotionPhoto` 之前；至少两项带 `Item:Padding`
 - **定位一致性** —— 逐项累加 `Length+Padding` 与「文件长度 − MotionPhoto Length」必须一致且落在 `ftyp` box 上；`GainMap` 项指向的位置必须是 `FFD8FF` 且能解码
 - **元数据** —— exiftool 逐标签比对 EXIF / ICC / MakerNotes / Composite
@@ -117,7 +121,7 @@ python3 verify_motionphoto.py --limit 10       # 抽查前 10 个
 
 ---
 
-## 2. Motion Photo 格式与三家厂商对比
+## 2. Motion Photo 格式与四家厂商对比
 
 ### 格式本身
 
@@ -134,33 +138,34 @@ python3 verify_motionphoto.py --limit 10       # 抽查前 10 个
 - **倒推法**：`视频起点 = 文件长度 − MotionPhoto 的 Item:Length`（Google Photos、ExoPlayer 用这个；规范原文也说 `Item:Length` 取代了旧的 `MicroVideoOffset`）
 - **累加法**：`视频起点 = 主图编码长度 + 逐项累加 Length 与 Padding`（exiftool 用这个，外加一个按 `ftyp` magic 重同步的兜底）
 
-**实测发现：原厂文件并不保证两种算法都对得上**，详见下面的对比。本工具的输出两种算法都精确一致，且每一项都指向它实际所在的位置——校验脚本会逐个文件检查这一点。
+**实测发现：原厂文件并不保证两种算法都对得上，而且两家翻车的方向正好相反**——OPPO 只有累加法对，vivo 只有倒推法对。本工具的输出两种算法都精确一致，且每一项都指向它实际所在的位置——校验脚本会逐个文件检查这一点。
 
-### 三家真机样片对比
+### 四家真机样片对比
 
-样片来自 OPPO Find X9 Ultra、Xiaomi 17T、Samsung Galaxy S24+，均为各自相机直出的实况照片；最后一列是本工具从 vivo X200 Pro 素材合成的输出，作为对照。
+样片来自 OPPO Find X9 Ultra、Xiaomi 17T、Samsung Galaxy S24+、vivo X300 Pro，均为各自相机直出的实况照片；最后一列是本工具从 vivo X200 Pro 素材合成的输出，作为对照。
 
-| | OPPO Find X9 Ultra | Xiaomi 17T | Samsung Galaxy S24+ | 本工具输出（vivo X200 Pro） |
-|---|---|---|---|---|
-| 文件大小 | 15.26 MB | 4.99 MB | 8.06 MB | 12.10 MB |
-| **静态主图分辨率** | 5888 × 4416 | 3072 × 4096 | 4000 × 3000 | 4096 × 3072 |
-| 主图编码长度 | 6 710 975 | 2 086 054 | 3 604 214 | 3 863 908 |
-| **GainMap 分辨率** | 2944 × 2208（主图 1/2） | 1536 × 2048（1/2） | 1000 × 750（1/4） | 2048 × 1536（1/2） |
-| GainMap 字节数 | 939 419 | 519 891 | 58 180 | 645 601 |
-| ISO 21496-1 HDR 标记 | 无 | 有 | 有 | 无（源图只有 Adobe `hdrgm`） |
-| **嵌入视频段数** | **2** | 1 | **2** | 1 |
-| 主视频 | HEVC 1728×1296 +AAC 2.85 s | HEVC 1296×1728 +AAC 1.34 s | HEVC 1312×984 +AAC 3.08 s | H.264 1728×1296 +AAC 3.07 s |
-| 次视频 | HEVC 1728×1296 无音轨 0.73 s | — | HEVC 1440×1080 无音轨 0.93 s | — |
-| `MotionPhoto` 的 `Item:Length` | 8 346 922<br>**比正确值少 131 字节** | 2 630 378<br>（= 视频长度） | 4 082 307<br>（= 视频 + 尾部索引 104 字节） | 8 176 500<br>（= 视频长度） |
-| 倒推法能否定位到视频起点 | **✗ 偏进 mp4 内部 131 字节** | ✓ | ✓ | ✓ |
-| 累加法能否定位到视频起点 | ✓ | ✓ | ✓ | ✓ |
-| 按目录能否定位到 GainMap | ✓ | ✓ | **✗ Padding 位置错** | ✓ |
-| Samsung SEF trailer | 无 | 无 | **有，7 个标签** | 无 |
-| 厂商私有 XMP | `OpCamera:*` 4 个 | 无 | 无 | 无 |
-| EXIF `UserComment` | `oplus_8601468928` | 无 | 无 | 原样保留（vivo 调试串） |
-| 封面帧位置 | 1.210 s / 2.85 s ≈ **42%** | 1.339 s / 1.34 s ≈ **100%** | 3.065 s / 3.08 s ≈ **99%** | 50%（duration/2） |
+| | OPPO Find X9 Ultra | Xiaomi 17T | Samsung Galaxy S24+ | vivo X300 Pro | 本工具输出（vivo X200 Pro） |
+|---|---|---|---|---|---|
+| 文件大小 | 15.26 MB | 4.99 MB | 8.06 MB | 11.87 MB | 12.10 MB |
+| **静态主图分辨率** | 5888 × 4416 | 3072 × 4096 | 4000 × 3000 | 4096 × 3072 | 4096 × 3072 |
+| 主图编码长度 | 6 710 975 | 2 086 054 | 3 604 214 | 4 932 367 | 3 863 908 |
+| **GainMap 分辨率** | 2944 × 2208（主图 1/2） | 1536 × 2048（1/2） | 1000 × 750（1/4） | 2048 × 1536（1/2） | 2048 × 1536（1/2） |
+| GainMap 字节数 | 939 419 | 519 891 | 58 180 | 1 134 545 | 645 601 |
+| ISO 21496-1 HDR 标记 | 无 | 有 | 有 | 有 | 无（源图只有 Adobe `hdrgm`） |
+| **嵌入视频段数** | **2** | 1 | **2** | 1 | 1 |
+| 主视频 | HEVC 1728×1296 +AAC 2.85 s | HEVC 1296×1728 +AAC 1.34 s | HEVC 1312×984 +AAC 3.08 s | HEVC 1920×1440 +AAC 3.00 s | H.264 1728×1296 +AAC 3.07 s |
+| 次视频 | HEVC 1728×1296 无音轨 0.73 s | — | HEVC 1440×1080 无音轨 0.93 s | — | — |
+| `MotionPhoto` 的 `Item:Length` | 8 346 922<br>**比正确值少 131 字节** | 2 630 378<br>（= 视频长度） | 4 082 307<br>（= 视频 + 尾部索引 104 字节） | 6 098 364<br>（= 视频长度，含 2 个 `uuid` box） | 8 176 500<br>（= 视频长度） |
+| 倒推法能否定位到视频起点 | **✗ 偏进 mp4 内部 131 字节** | ✓ | ✓ | ✓ | ✓ |
+| 累加法能否定位到视频起点 | ✓ | ✓ | ✓ | **✗ 差 282 114 字节** | ✓ |
+| 按目录能否定位到 GainMap | ✓ | ✓ | **✗ Padding 位置错** | ✓ | ✓ |
+| Samsung SEF trailer | 无 | 无 | **有，7 个标签** | 无 | 无 |
+| 厂商私有 XMP | `OpCamera:*` 4 个 | 无 | 无 | **`VCamera:*` 3 个（必需）** | 无（`--vcamera` 时 3 个） |
+| 厂商私有二进制块 | 4 487 字节私有块 + 618 字节尾部索引 | 无 | SEF trailer 104 字节索引 | **282 KB EStream 包，存了两份** | 原样保留源图的尾部 |
+| EXIF `UserComment` | `oplus_8601468928` | 无 | 无 | 很长的 vivo 调试串 | 原样保留（vivo 调试串） |
+| 封面帧位置 | 1.210 s / 2.85 s ≈ **42%** | 1.339 s / 1.34 s ≈ **100%** | 3.065 s / 3.08 s ≈ **99%** | 1.484 s / 3.00 s ≈ **49%** | 50%（duration/2） |
 
-三家的**共同核心完全一致**，只有这三个 `GCamera` 属性加一个三项容器目录：
+四家的**共同核心完全一致**，只有这三个 `GCamera` 属性加一个三项容器目录：
 
 ```xml
 GCamera:MotionPhoto="1"
@@ -169,7 +174,7 @@ GCamera:MotionPhotoPresentationTimestampUs="..."
 Container:Directory → Primary + GainMap + MotionPhoto
 ```
 
-差异全在「核心之外的附加层」，而且**两家原厂文件都有自相矛盾的地方**。
+差异全在「核心之外的附加层」，而且**四家里有三家的原厂文件都有自相矛盾的地方**——只有小米是干净的。更麻烦的是，这个共同核心对 vivo 来说**不够**：它还要三个私有属性才认（坑 8）。
 
 #### OPPO：`Item:Length` 少了 131 字节
 
@@ -180,8 +185,11 @@ Container:Directory → Primary + GainMap + MotionPhoto
 6710975      GainMap（Item:Length=939419）                  7650394
 7650394      mp4 #1：HEVC 1728×1296 +AAC 2.85s，6794201 字节  ← = OpCamera:VideoLength
 14444595     4487 字节 OPPO 私有块（含 "lighthousetele" 字样） 14449082
-14449082     mp4 #2：HEVC 1728×1296 无音轨 0.73s              15997447
+14449082     mp4 #2：HEVC 1728×1296 无音轨 0.73s              15996829
+15996829     618 字节尾部：travel.info + JSON 索引 + "wtmk"     15997447
 ```
+
+尾部那段 JSON 是一张私有块索引表，按「距索引起点向前多少字节」描述每一项：`live.subVideo`（1 547 747，就是 mp4 #2）、`hdr.transform.data`、`watermark.device`、`travel.info`（`{"travelName":"法国",…}`）等 8 条。
 
 真实的视频起点是 **7650394**（那里是 `ftyp` box），但 `MotionPhoto` 的`Item:Length=8346922` 倒推出来是 **7650525**，落在 mp4 内部（`moov` 里面）——正确值应该是 8347053，**少写了 131 字节**。用 ffprobe 从倒推位置切片，直接报`moov atom not found`。
 
@@ -215,9 +223,40 @@ XMP 里把 `Item:Padding=703611` 写在了 **`Primary`（第一项）上**，而
 
 顺便一提，上一张三星样片把这个 `Padding` 写在 `GainMap` 项上（语义正确，因为那张的信息标签排在视频之后）。规范原文说「只有第一个 item 可以带 Padding」，三星两种写法都出现过，可见这个字段在真机上并不严谨。
 
+#### vivo：282 KB 的私有包压根不在容器目录里
+
+和 OPPO 恰好相反——**只有倒推法能用**。布局：
+
+```
+0            主图 JPEG                                        4932367
+4932367      GainMap（Item:Length=1134545）                    6066912
+6066912      vivoMediaEStream 包（裸的）282114 字节  ← 容器目录完全没描述  6349026
+6349026      mp4（Item:Length=6098364，正好到文件尾）           12447390
+               ftyp 24 / free 3192 / mdat 5808244 / moov 4464
+               uuid "vivoMediaEStream" 281979  ← 上面那 282 KB 的第二份副本
+               uuid "vivoMediaExtInfo"    461  ← JSON + cameralbum! 尾部块
+```
+
+容器目录里 `Primary` 和 `GainMap` 都没写 `Padding`，中间那 282 KB 就成了黑洞：累加法算出 `4932367 + 1134545 = 6066912`，落在 EStream 包里；倒推法 `12447390 − 6098364 = 6349026` 才是真正的 `ftyp`。所以 OriginOS 相册用的是倒推法或者直接扫 `ftyp`。
+
+那个 EStream 包是 vivo 自己的多流容器，6 条流各自用 10 字节的 `streamdata` 标记开头，后面跟一张 `streaminfo` 索引表：
+
+| key | 长度 | 内容 |
+|---|---|---|
+| 0x6c | 4 | 数值 700 |
+| 0x01 | 231 468 | JPEG（带自己的 EXIF，缩略图/封面帧） |
+| 0x04 | 33 815 | PNG |
+| 0x05 | 16 363 | PNG |
+| 0x65 | 46 | 小数据块 |
+| 0x01（kind 6） | 72 | `DEGS…DEGE` 块 |
+
+同一套流在 mp4 里还有一份（包在 `uuid vivoMediaEStream` box 里），也就是 282 KB 存了两遍。实测这些流和识别无关，本工具不生成它们。
+
+vivo 还是四家里唯一**硬性要求私有 XMP 标签**的：`VCamera:VMotionPhotoVersion` / `VMotionPhotoSource` / `VMediaKitVersion` 三个必须同时存在，缺一个就认不出，详见坑 8。
+
 #### `MotionPhoto` 的 `Item:Length` 到底是什么
 
-不是「视频的字节长度」，而是「**视频起点到文件尾**」。三星把尾部 104 字节的 SEFH 索引算进去了；OPPO 本意也是这样（想涵盖两段视频 + 私有块），只是算差了 131 字节。小米单段视频且尾部无附加数据，所以恰好等于视频长度。
+不是「视频的字节长度」，而是「**视频起点到文件尾**」。三星把尾部 104 字节的 SEFH 索引算进去了；OPPO 本意也是这样（想涵盖两段视频 + 私有块），只是算差了 131 字节。小米和 vivo 是单段视频、尾部没有视频之外的附加数据，所以恰好等于视频长度（vivo 那两个 `uuid` box 本来就是 mp4 的一部分）。
 
 ### 那段短的无音轨次视频是干什么的
 
@@ -225,13 +264,13 @@ XMP 里把 `Item:Padding=703611` 写在了 **`Primary`（第一项）上**，而
 
 规范里也留了口子：允许一条可选的次视频轨，读取器「应当用它的内容来替代静态主图显示」，让「静态图 → 开始动」的切换不突兀。三星那段分辨率比主视频略高（1440×1080 vs 1312×984）算符合这个描述，但 OPPO 那段和主视频分辨率完全相同（都是 1728×1296），这条解释对 OPPO 不成立。
 
-**这两段都是可选的**，本工具输出单段视频，三家手机都能识别和播放。
+**这两段都是可选的**：小米和 vivo 的原厂件就只有一段，本工具也只输出一段，四家手机都能识别和播放。
 
 ### 封面帧位置
 
-`MotionPhotoPresentationTimestampUs` 指明静态图对应视频里的哪一帧。小米和三星都放在**最后一帧**（100%/99%），说明它们录的是「快门之前」那一段；OPPO 放在 **42%**，说明它录的是快门前后各一段。
+`MotionPhotoPresentationTimestampUs` 指明静态图对应视频里的哪一帧。四家分成两派：小米和三星放在**最后一帧**（100% / 99%），说明它们录的是「快门之前」那一段；OPPO 和 vivo 放在**中间**（42% / 49%），说明录的是快门前后各一段。
 
-本工具用 `duration/2`。这个选择是有依据的：拿 vivo 原始素材的照片 EXIF 时刻对比 mp4的 `creation_time` 反推，快门大约落在视频的 37%~46%（三个样本），和 OPPO 的 42% 也接近。规范同样规定该属性缺失时读取器默认取中点。
+本工具用 `duration/2`。这个选择是有依据的：拿 vivo 原始素材的照片 EXIF 时刻对比 mp4的 `creation_time` 反推，快门大约落在视频的 37%~46%（三个样本），和 OPPO 的 42%、vivo 自己的 49% 都接近。规范同样规定该属性缺失时读取器默认取中点。
 
 ---
 
@@ -327,10 +366,12 @@ MPF 的偏移是相对「MP Endian 字段起始处」的，所以只要把 XMP �
 | EXIF `UserComment = oplus_8388608` | OPPO 真机样片里是 `oplus_` 加一串数字；某个开源网页工具的 OPPO 模式写死了 `oplus_8388608` 这个值 | **不需要**。不改 EXIF 照样识别 → 删掉，回到「EXIF 一个字节都不动」 |
 | `OpCamera:*` 4 个私有属性 | OPPO 真机样片 | **不需要**。小米样片一个都没有，OPPO 照样能识别 → 删掉 |
 | Samsung SEF trailer（`mpv3`） | MotionPhoto2 复刻 Galaxy S23 的写法 | **不需要**。三星 Gallery 认标准格式 → 删掉 |
-| `--flat-container`（把容器目录压平成两项） | 我自己防「写死了视频是第 2 项」的假想读取器 | **无用**。三家都用倒推法定位视频；而且压平后三家 HDR 仍正常（它们靠 MPF 找 gainmap，不看容器目录）→ 删掉 |
+| `--flat-container`（把容器目录压平成两项） | 我自己防「写死了视频是第 2 项」的假想读取器 | **无用**。没有一家按项序号定位视频（后来从原厂件反推出来：OPPO 走累加法、vivo 走倒推法）；而且压平后 HDR 仍正常（都靠 MPF 找 gainmap，不看容器目录）→ 删掉 |
 | `--name-style`（`MVIMG_` 前缀 / `MP` 后缀） | 规范原文允许读取器在文件名不匹配 `^...MP\.(jpg\|jpeg\|heic\|avif)$` 时**直接忽略**动态照片；`MVIMG_` 是旧版 Google Camera 约定 | 三家都不看文件名。保留了这个开关，零风险且规范推荐，可能对别的软件有用 |
 
-一句话总结：**三家相册认的就是同一套纯 Google 标准元数据，任何厂商私有的东西都不需要。** OPPO 之前认不出，不是因为缺了 OPPO 私有的东西，而是因为**多写了会把它带偏的东西**。
+一句话总结：**这三家相册认的就是同一套纯 Google 标准元数据，厂商私有的东西一样都不需要。** OPPO 之前认不出，不是因为缺了 OPPO 私有的东西，而是因为**多写了会把它带偏的东西**。
+
+（这个总结后来被第四台机器推翻了一半：vivo 反过来**硬性要求**三个私有属性，见坑 8。「私有标签一律不写」只在前三家成立。）
 
 这也解释了「为什么小米拍的照片在 OPPO 上能识别」——小米文件里只有标准元数据，说明 ColorOS 本来就完整支持 Google 标准格式。
 
@@ -352,13 +393,67 @@ MPF 的偏移是相对「MP Endian 字段起始处」的，所以只要把 XMP �
 
 **这个 bug 只可能被独立实现的校验脚本发现**——如果校验复用合成脚本的解析逻辑，两边会用同一套错误假设，永远查不出来。
 
+### 坑 8（和坑 5 正好相反）：vivo 少了私有标签就认不出
+
+前面三家都验证通过之后，把输出拷回 vivo X300 Pro——**认不出**。素材本来就是 vivo 拍的，唯一不认的偏偏是 vivo。
+
+先做了一个零成本的对照实验：把 X300 Pro 直出的原厂合并件（`samples/vivo_sample.jpg`）拷回同一台机器，能正常识别。这就排除了「固件不支持单文件动态照片」，问题一定在元数据上。逐项比对，差异有五处：
+
+| # | 差异 | 原厂件 | 本工具当时的输出 |
+|---|---|---|---|
+| 1 | XMP 里的 `VCamera:VMotionPhotoVersion` / `VMotionPhotoSource` / `VMediaKitVersion` | 有 | 无 |
+| 2 | 尾部 `cameralbum!` 块里的 28 字节 livephoto ID | `motionphoto00010000000000000` | 源素材的配对 ID `1756680600762586db2…` |
+| 3 | XMP 的 `<?xpacket?>` 包裹 | 无 | 有 |
+| 4 | 尾部 JSON 的 `version` | 2103 | 2101 / 2104 |
+| 5 | `uuid vivoMediaEStream` 包（282 KB 缩略图和 PNG，还存了两份） | 有 | 无（源素材里就没有，造不出来） |
+
+前四项各做一个单变量变体，加一个全改的变体，真机实测：
+
+```
+只加 VCamera 三个属性     -> 认   ✅
+四项全改                  -> 认   ✅
+只改尾部 livephoto ID     -> 不认
+只去掉 xpacket 包裹       -> 不认
+只改 version              -> 不认
+```
+
+**判定只看 XMP，和尾部那套 `cameralbum!` 厂商数据无关。** 于是把三个属性拆开测第二轮：
+
+```
+只写 VMotionPhotoVersion        -> 不认
+只写 VMotionPhotoSource         -> 不认
+只写 VMediaKitVersion           -> 不认
+Version + Source                -> 不认
+Version + MediaKit              -> 不认
+Source + MediaKit               -> 不认
+三个都写                        -> 认   ✅
+```
+
+**vivo 要求这三个属性同时存在，缺任何一个都走不进它的动态照片分支。** 回归确认：带这三个属性的文件在 OPPO Find X9 Ultra / Xiaomi 17T / Samsung Galaxy S24+ 上依然正常识别，对别家零副作用。
+
+不过这一组**不在 Motion Photo 规范里**，所以没有无条件写死，而是做成三档的 `--vcamera`，默认 `auto`：**按源照片 EXIF 里的 `Make` 判断，vivo 拍的才写。** 这样既不用手动记着加开关，也不会给别家的素材塞进规范外的标签。
+
+这一条和坑 5 恰好互为镜像，两家厂商的态度完全相反：
+
+| 厂商 | 私有标签 | 实测结论 |
+|---|---|---|
+| OPPO | `GCamera:MicroVideo*` | **写了就认不出**（源文件带了也要清掉） |
+| OPPO | `OpCamera:*` | 可有可无，写与不写都认 |
+| **vivo** | `VCamera:*` 三个 | **不写就认不出**，且必须三个齐全 |
+
+所以「只写纯 Google 标准就够了」这个结论是错的，它只在前三家成立。真正的规律是：**标准元数据是必要条件，不一定是充分条件。** 具体哪家额外要什么，只能靠真机单变量对照测出来，从规范推导不出来。
+
+这张 X300 Pro 样片的其余结构差异（EStream 包、只有倒推法能用、ISO 21496-1 块）都归到了第 2 节的对比表和「vivo：282 KB 的私有包压根不在容器目录里」那一小节。其中「只有倒推法能用」和 OPPO 的「只有累加法能用」恰好互补——四张原厂样片里三张自相矛盾，这正好说明「两种算法都要对得上」不是洁癖。
+
+`vivo_test_variants.py` 就是当时生成这些单变量测试文件的脚本，留在仓库里，以后遇到新机型可以复用同一套方法。
+
 ---
 
 ## 4. 最终结论：写什么、不写什么
 
-真机实测通过：OPPO Find X9 Ultra / ColorOS，Xiaomi 17T / HyperOS，Samsung Galaxy S24+ / One UI。
+真机实测通过：OPPO Find X9 Ultra / ColorOS，Xiaomi 17T / HyperOS，Samsung Galaxy S24+ / One UI，vivo X300 Pro / OriginOS。
 
-**写**（纯 Google 标准，一个厂商私有标签都没有）：
+**一律写**（纯 Google 标准，一个厂商私有标签都没有）：
 
 ```xml
 <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="...">
@@ -393,22 +488,52 @@ MPF 的偏移是相对「MP Endian 字段起始处」的，所以只要把 XMP �
 </x:xmpmeta>
 ```
 
+**源照片是 vivo 拍的时候额外写**（规范外的 vivo 私有属性）：
+
+```xml
+        xmlns:VCamera="http://ns.vivo.com/photos/1.0/camera/"
+      VCamera:VMotionPhotoVersion="1"
+      VCamera:VMotionPhotoSource="1"
+      VCamera:VMediaKitVersion="1.0.0.5"
+```
+
+`VCamera:*` 是坑 8 里唯一被证明必需的厂商私有标签，而且**三个必须同时出现**，缺一个 vivo 就认不出。但它不在 Motion Photo 规范里，所以不无条件写死，而是做成三档的 `--vcamera`：
+
+| `--vcamera` | 行为 | OPPO / 小米 / 三星 | vivo |
+|---|---|---|---|
+| `auto`（默认） | 源照片是 vivo 拍的就写，别家不写 | 识别 | vivo 素材：识别 |
+| `on` | 一律写 | 识别（已回归验证无副作用） | 识别 |
+| `off` | 一律不写，严格只含规范内标签 | 识别 | **不识别**，当静态照片 |
+
+`auto` 的判断依据按可靠性排序，命中任一条就算 vivo：
+
+1. EXIF `IFD0` 的 `Make` 以 `vivo` 开头（iQOO 机型也写 `vivo`）
+2. 源 XMP 里声明了 vivo 的私有命名空间
+3. 文件尾部有 vivo 相机的 `cameralbum!` 块
+
+三条都只读源文件，不改任何字节。之所以不只看 `Make`：有些文件的 EXIF 可能被中间环节剥掉，后两条能兜住。
+
+校验脚本**自己重新判断一遍**是不是 vivo 拍的（独立实现的 EXIF 解析，不 `import` 合成脚本），再据此要求 `VCamera:*` 齐全或全无。合成脚本在清单里声明的结果只用来对账：两边判断不一致会直接报错。不管哪种期望，**只写出一两个永远算失败**——那是唯一会静默坏掉 vivo 的状态。
+
 **不写**：
 
 | 项目 | 原因 |
 |---|---|
 | `GCamera:MicroVideo*` | **有害**，写了 OPPO 就认不出（源文件带了也会清掉） |
-| `OpCamera:*` | 不需要 |
+| `OpCamera:*` | 不需要，写与不写 OPPO 都认 |
 | EXIF `UserComment = oplus_xxx` | 不需要，且会破坏「EXIF 不动」 |
 | Samsung SEF trailer | 不需要 |
+| vivo 的 `uuid vivoMediaEStream` 包 | 不需要（缩略图和 PNG，与识别无关） |
+| 改写 vivo 尾部 `cameralbum!` 块里的 livephoto ID / `version` | 不需要，实测对识别没有影响 |
 | 短的无音轨次视频 | 可选，不影响识别 |
 
 **必须注意的实现细节**：
 
 - `xmlns` 声明要放在真机的位置上（`xmlns:rdf` 在 `rdf:RDF` 上、其余在`rdf:Description` 上），不能全提到根元素
-- 前缀用 `GCamera` / `Container` / `Item` 这一套通用写法
+- 前缀用 `GCamera` / `Container` / `Item` 这一套通用写法（写 vivo 私有标签时加 `VCamera`）
+- 写 `VCamera:*` 就三个一起写，一个都不能少；不写就一个都别留
 - 至少两个 item 带 `Item:Padding`，否则 exiftool ≤13.50 读取时会崩
-- 容器目录里的 `GainMap` 项必须保留：三家相册不看它（走 MPF），但 Google Photos 的Ultra HDR 依赖它
+- 容器目录里的 `GainMap` 项必须保留：四家相册都不看它（走 MPF），但 Google Photos 的Ultra HDR 依赖它
 - 插入 XMP 段后要修正 MPF 里的主图长度字段
 - secondary item 的实际起点可能因对齐填充而后移，前置空隙要记到前一项的 `Padding`
 
@@ -423,10 +548,12 @@ make_motionphoto.py                  合成脚本，零第三方依赖
 verify_motionphoto.py                独立校验脚本，合成结束后自动调用
 README.md                            本文件
 .gitignore
-samples/                             三家真机相机直出的实况照片，格式分析的依据
+vivo_test_variants.py                单变量对照测试文件生成器（坑 8 用的）
+samples/                             四家真机相机直出的实况照片，格式分析的依据
 ├── OPPO_sample.jpg                   OPPO Find X9 Ultra   15.3 MB
 ├── Xiaomi_sample.jpg                 Xiaomi 17T            5.0 MB
-└── Samsung_sample.jpg                Samsung Galaxy S24+   8.1 MB
+├── Samsung_sample.jpg                Samsung Galaxy S24+   8.1 MB
+└── vivo_sample.jpg                   vivo X300 Pro        11.9 MB
 ```
 
 样片，使用`python3 make_motionphoto.py --inspect samples/新样片.jpg` 就能读出它的结构来参考。
